@@ -1,2 +1,2 @@
-# quotoforge
+# quotaforge
 Rate Limiter
