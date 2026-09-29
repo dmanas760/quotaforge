@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: quotaforge
+      POSTGRES_USER: quotaforge
+      POSTGRES_PASSWORD: quotaforge
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quotaforge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile
+    ports:
+      - "8081:8080"
+    environment:
+      DATABASE_URL: postgres://quotaforge:quotaforge@postgres:5432/quotaforge?sslmode=disable
+      REDIS_ADDR: redis:6379
+      PORT: 8080
+      LOG_LEVEL: info
+      SHUTDOWN_TIMEOUT: 15s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

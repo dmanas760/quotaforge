@@ -1,0 +1,212 @@
+openapi: 3.1.0
+info:
+  title: QuotaForge Rate Limiter API
+  version: 1.0.0
+  description: >
+    A standalone multi-tenant rate-limiting API. Make a POST to /v1/decisions to
+    get an allow/deny decision backed by Redis (token bucket or sliding window).
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Service API key obtained via POST /v1/keys
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:       { type: string }
+            message:    { type: string }
+            request_id: { type: string }
+
+    DecisionRequest:
+      type: object
+      required: [client_id]
+      properties:
+        client_id:  { type: string, example: "service-abc" }
+        policy_id:  { type: string, format: uuid }
+        cost:       { type: integer, default: 1, minimum: 1 }
+
+    DecisionResponse:
+      type: object
+      properties:
+        allowed:    { type: boolean }
+        reason:     { type: string, example: "ok" }
+        algorithm:  { type: string, enum: [token_bucket, sliding_window] }
+        limit:      { type: integer }
+        remaining:  { type: integer }
+        reset_at:   { type: string, format: date-time }
+        request_id: { type: string }
+
+    Policy:
+      type: object
+      properties:
+        id:             { type: string, format: uuid }
+        tenant_id:      { type: string, format: uuid }
+        name:           { type: string }
+        algorithm:      { type: string, enum: [token_bucket, sliding_window] }
+        capacity:       { type: integer }
+        refill_rate:    { type: number }
+        window_seconds: { type: integer }
+        burst_capacity: { type: integer }
+        enabled:        { type: boolean }
+        version:        { type: integer }
+        created_at:     { type: string, format: date-time }
+        updated_at:     { type: string, format: date-time }
+
+paths:
+  /health/live:
+    get:
+      summary: Liveness probe
+      security: []
+      responses:
+        '200': { description: Process is up }
+
+  /health/ready:
+    get:
+      summary: Readiness probe
+      security: []
+      responses:
+        '200': { description: Ready — Postgres and Redis are healthy }
+        '503': { description: Not ready }
+
+  /v1/decisions:
+    post:
+      summary: Make a rate-limit decision
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DecisionRequest' }
+      responses:
+        '200':
+          description: Decision made (always 200; inspect `allowed` field)
+          headers:
+            RateLimit-Limit:     { schema: { type: integer } }
+            RateLimit-Remaining: { schema: { type: integer } }
+            RateLimit-Reset:     { schema: { type: string, format: date-time } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DecisionResponse' }
+        '400': { description: Invalid payload }
+        '401': { description: Missing or revoked API key }
+        '503': { description: Redis or Postgres unavailable }
+
+  /v1/policies:
+    post:
+      summary: Create a rate-limit policy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, algorithm, capacity]
+              properties:
+                name:           { type: string }
+                algorithm:      { type: string, enum: [token_bucket, sliding_window] }
+                capacity:       { type: integer }
+                refill_rate:    { type: number }
+                window_seconds: { type: integer }
+                burst_capacity: { type: integer }
+      responses:
+        '201':
+          description: Policy created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Policy' }
+    get:
+      summary: List policies
+      responses:
+        '200':
+          description: List of policies
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policies:
+                    type: array
+                    items: { $ref: '#/components/schemas/Policy' }
+
+  /v1/policies/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      summary: Get a policy
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Policy' }
+        '404': { description: Not found }
+    patch:
+      summary: Update a policy (optimistic lock via version)
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Policy' }
+        '409': { description: Version conflict }
+    delete:
+      summary: Delete a policy
+      responses:
+        '204': { description: Deleted }
+
+  /v1/keys:
+    post:
+      summary: Create a service API key (raw key shown once)
+      responses:
+        '201':
+          description: Key created — raw_key shown only once
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:         { type: string, format: uuid }
+                  key_prefix: { type: string }
+                  raw_key:    { type: string, description: "Shown only at creation/rotation" }
+                  status:     { type: string }
+                  created_at: { type: string, format: date-time }
+    get:
+      summary: List API keys (hashes and raw keys never returned)
+      responses:
+        '200': { description: Safe list of keys }
+
+  /v1/keys/{id}/rotate:
+    post:
+      summary: Rotate (revoke + reissue) an API key
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: New key (raw_key shown once) }
+
+  /v1/keys/{id}:
+    delete:
+      summary: Revoke an API key
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Revoked }
